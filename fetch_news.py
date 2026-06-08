@@ -5,6 +5,7 @@ suggested interest-domain angle for content ideation.
 
 Brands:  KiraAI | Coaching | AI_Agency | Interest
 Output:  data/news.json
+Max:     20 articles total
 """
 
 import os
@@ -14,15 +15,11 @@ import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# Ensure Chinese characters print correctly on Windows terminals
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Interest-domain → English keyword mapping for angle scoring
-# ---------------------------------------------------------------------------
 INTEREST_ANGLES: dict[str, list[str]] = {
     "心理学":   ["psychology", "cognitive", "bias", "behavior", "mindset", "emotional", "subconscious"],
     "自然科学": ["science", "research", "experiment", "evidence", "biology", "physics", "chemistry"],
@@ -49,9 +46,6 @@ INTEREST_ANGLES: dict[str, list[str]] = {
     "创业":     ["startup", "founder", "venture", "entrepreneur", "build", "mvp", "fundraise", "bootstrapping"],
 }
 
-# ---------------------------------------------------------------------------
-# Brand pillar → search queries
-# ---------------------------------------------------------------------------
 BRAND_QUERIES: dict[str, list[str]] = {
     "KiraAI": [
         "fintech Malaysia SME",
@@ -75,17 +69,17 @@ BRAND_QUERIES: dict[str, list[str]] = {
     ],
 }
 
-# Fallback angle when keyword scoring finds no match
 DEFAULT_ANGLES: dict[str, str] = {
-    "KiraAI":   "金融学",
-    "Coaching": "管理学",
+    "KiraAI":    "金融学",
+    "Coaching":  "管理学",
     "AI_Agency": "科技",
-    "Interest": "哲学",
+    "Interest":  "哲学",
 }
+
+MAX_ARTICLES = 20  # total cap
 
 
 def score_angle(text: str) -> str | None:
-    """Return the best-matching interest-domain for a piece of text, or None."""
     text_lower = text.lower()
     scores: dict[str, int] = {}
     for domain, keywords in INTEREST_ANGLES.items():
@@ -95,14 +89,9 @@ def score_angle(text: str) -> str | None:
     return max(scores, key=scores.get) if scores else None
 
 
-def fetch_brand_news(
-    exa,
-    brand: str,
-    queries: list[str],
-    days_back: int = 7,
-    results_per_query: int = 5,
-) -> list[dict]:
-    """Fetch and deduplicate news items for one brand pillar."""
+def fetch_brand_news(exa, brand: str, queries: list[str],
+                     days_back: int = 7, results_per_query: int = 3) -> list[dict]:
+    """Fetch and deduplicate news items for one brand pillar (max 3 per query)."""
     results: list[dict] = []
     seen_urls: set[str] = set()
     cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -121,10 +110,8 @@ def fetch_brand_news(
                 if item.url in seen_urls:
                     continue
                 seen_urls.add(item.url)
-
                 combined_text = f"{item.title or ''} {item.text or ''}"
                 angle = score_angle(combined_text) or DEFAULT_ANGLES[brand]
-
                 results.append({
                     "title":           item.title or "",
                     "summary":         (item.text or "").strip()[:350],
@@ -134,9 +121,7 @@ def fetch_brand_news(
                     "published_date":  (item.published_date or "")[:10],
                     "query_used":      query,
                 })
-
-            time.sleep(0.4)  # stay within Exa rate limits
-
+            time.sleep(0.4)
         except Exception as exc:
             print(f"  [Warning] Query '{query}' failed: {exc}")
 
@@ -146,18 +131,12 @@ def fetch_brand_news(
 def main() -> None:
     api_key = os.getenv("EXA_API_KEY")
     if not api_key:
-        raise EnvironmentError(
-            "EXA_API_KEY not set.\n"
-            "Copy .env.example to .env and paste your Exa API key."
-        )
+        raise EnvironmentError("EXA_API_KEY not set.")
 
     try:
         from exa_py import Exa
     except ImportError:
-        raise ImportError(
-            "exa-py not installed. Run:\n"
-            "  pip install -r requirements.txt"
-        )
+        raise ImportError("exa-py not installed. Run: pip install -r requirements.txt")
 
     exa = Exa(api_key=api_key)
 
@@ -168,8 +147,9 @@ def main() -> None:
         print(f"  -> {len(items)} articles")
         all_news.extend(items)
 
-    # Sort by date descending, most recent first
+    # Sort by date descending, cap at MAX_ARTICLES
     all_news.sort(key=lambda x: x["published_date"], reverse=True)
+    all_news = all_news[:MAX_ARTICLES]
 
     os.makedirs("data", exist_ok=True)
     output_path = "data/news.json"
@@ -178,7 +158,6 @@ def main() -> None:
 
     print(f"\nDone - {len(all_news)} articles saved to {output_path}")
 
-    # Print a quick summary table
     print("\nAngle distribution:")
     angle_counts: dict[str, int] = {}
     for item in all_news:
