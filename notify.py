@@ -1,6 +1,7 @@
 """
 notify.py — Content Flywheel: Telegram Daily Briefing
 Reads data/news.json (or data/briefs.json if available),
+translates titles and summaries to Chinese via OpenRouter (DeepSeek),
 sends formatted daily briefing to Telegram.
 
 Usage:
@@ -26,9 +27,59 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 MYT = timezone(timedelta(hours=8))
 
-BRAND_EMOJI = {"KiraAI": "💳", "Coaching": "🎯", "AI_Agency": "🤖", "Interest": "💡"}
-BRAND_LABEL = {"KiraAI": "KiraAI", "Coaching": "Coaching", "AI_Agency": "AI Agency", "Interest": "Interest"}
+BRAND_EMOJI  = {"KiraAI": "💳", "Coaching": "🎯", "AI_Agency": "🤖", "Interest": "💡"}
+BRAND_LABEL  = {"KiraAI": "KiraAI", "Coaching": "Coaching", "AI_Agency": "AI Agency", "Interest": "Interest"}
 
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek/deepseek-chat"
+
+
+# ---------------------------------------------------------------------------
+# Translation via OpenRouter / DeepSeek
+# ---------------------------------------------------------------------------
+
+def translate_to_chinese(text: str) -> str:
+    """Translate text to Chinese using DeepSeek via OpenRouter. Returns original on failure."""
+    if not text.strip() or not OPENROUTER_KEY:
+        return text
+    payload = json.dumps({
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是专业翻译。将用户输入翻译成简体中文，只输出翻译结果，不加任何解释。"
+            },
+            {
+                "role": "user",
+                "content": text
+            }
+        ],
+        "max_tokens": 300,
+        "temperature": 0.3,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        OPENROUTER_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "HTTP-Referer": "https://github.com/flyhust/kkcai",
+            "X-Title": "Content Flywheel",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            result = json.loads(r.read())
+            return result["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        print(f"  [Translation error] {exc}")
+        return text  # fallback to original
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -39,7 +90,7 @@ def clean_summary(raw: str) -> str:
     lines = [l for l in lines if not l.startswith("#") and l not in
              ("Search", "More", "Share", "Menu", "Skip to main content", "View")]
     text = " ".join(lines)
-    return re.sub(r"\s{2,}", " ", text)[:200]
+    return re.sub(r"\s{2,}", " ", text)[:400]
 
 
 def send_message(token: str, chat_id: str, text: str, dry_run: bool = False) -> bool:
@@ -66,25 +117,13 @@ def build_summary(items: list[dict], date_str: str) -> str:
         counts[b] = counts.get(b, 0) + 1
     lines = [
         f"🗞 <b>每日内容简报</b> {date_str}",
-        f"",
+        "",
         f"📊 今日共 <b>{len(items)}</b> 条新闻",
     ]
     for brand in ["KiraAI", "Coaching", "AI_Agency", "Interest"]:
         if counts.get(brand):
             lines.append(f"{BRAND_EMOJI[brand]} {BRAND_LABEL[brand]}: {counts[brand]}条")
     return "\n".join(lines)
-
-
-def trunc_chars(text: str, n: int) -> str:
-    """Truncate to n characters, append … if cut."""
-    text = text.strip()
-    return text if len(text) <= n else text[:n].rstrip() + "…"
-
-
-def trunc_words(text: str, n: int) -> str:
-    """Truncate to n words, append … if cut."""
-    words = text.split()
-    return " ".join(words) if len(words) <= n else " ".join(words[:n]) + "…"
 
 
 def build_message(item: dict, use_brief: bool = False) -> str:
@@ -104,17 +143,17 @@ def build_message(item: dict, use_brief: bool = False) -> str:
         url         = item.get("url", "")
         date        = item.get("published_date", "")
 
-    title_cn   = esc(trunc_chars(raw_title,   20))
-    title_en   = esc(trunc_words(raw_title,   20))
-    summary_cn = esc(trunc_chars(raw_summary, 30))
-    summary_en = esc(trunc_words(raw_summary, 30))
+    # Translate to Chinese
+    print(f"    翻译标题: {raw_title[:50]}")
+    title_cn   = translate_to_chinese(raw_title)
+    print(f"    翻译摘要...")
+    summary_cn = translate_to_chinese(raw_summary)
 
     lines = [
-        f"{emoji} <b>[{label}]</b> | {angle}", "",
-        f"<b>标题CN：</b>{title_cn}",
-        f"<b>标题EN：</b>{title_en}",
-        f"<b>摘要CN：</b>{summary_cn}",
-        f"<b>摘要EN：</b>{summary_en}",
+        f"{emoji} <b>[{label}]</b> | {angle}",
+        "",
+        f"<b>标题：</b>{esc(title_cn)}",
+        f"<b>摘要：</b>{esc(summary_cn)}",
     ]
     if date:
         lines.append(f"<b>日期：</b>{date}")
@@ -124,7 +163,6 @@ def build_message(item: dict, use_brief: bool = False) -> str:
 
 
 def load_items() -> tuple[list[dict], bool]:
-    """Return (items, use_brief). Prefers briefs.json over news.json."""
     if os.path.exists("data/briefs.json"):
         with open("data/briefs.json", encoding="utf-8") as f:
             return json.load(f), True
@@ -136,7 +174,7 @@ def load_items() -> tuple[list[dict], bool]:
 
 def run(token: str, chat_id: str, dry_run: bool = False) -> int:
     items, use_brief = load_items()
-    source = "briefs.json" if use_brief else "news.json"
+    source   = "briefs.json" if use_brief else "news.json"
     date_str = datetime.now(MYT).strftime("%Y-%m-%d")
 
     print(f"Source: {source} ({len(items)} items) — sending to Telegram ...")
@@ -144,10 +182,9 @@ def run(token: str, chat_id: str, dry_run: bool = False) -> int:
     send_message(token, chat_id, build_summary(items, date_str), dry_run)
     time.sleep(1)
 
-    sent = 0
-    brand_order = ["KiraAI", "Coaching", "AI_Agency", "Interest"]
+    sent  = 0
     total = len(items)
-    for brand in brand_order:
+    for brand in ["KiraAI", "Coaching", "AI_Agency", "Interest"]:
         for item in [i for i in items if i.get("brand") == brand]:
             msg = build_message(item, use_brief)
             ok  = send_message(token, chat_id, msg, dry_run)
@@ -168,7 +205,7 @@ def main() -> None:
     token   = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not args.dry_run:
-        if not token:  raise EnvironmentError("TELEGRAM_BOT_TOKEN not set")
+        if not token:   raise EnvironmentError("TELEGRAM_BOT_TOKEN not set")
         if not chat_id: raise EnvironmentError("TELEGRAM_CHAT_ID not set")
 
     run(token, chat_id, dry_run=args.dry_run)
