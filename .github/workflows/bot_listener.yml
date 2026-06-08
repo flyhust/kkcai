@@ -1,0 +1,38 @@
+name: Telegram Bot Listener
+
+# Restart every 6 hours so the bot stays responsive around the clock.
+# Each run exits cleanly after 5h50m, then the next cron fires it back up.
+#
+# Cost note: GitHub Actions free tier = 2,000 min/month for private repos.
+# 4 runs/day × 350 min = 1,400 min/day — use a PUBLIC repo to avoid charges,
+# or run bot_listener.py on your own machine / VPS instead.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # restart every 6 hours
+  workflow_dispatch:          # manual start from GitHub UI
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355      # hard kill just under 6 h
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot listener
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          EXA_API_KEY:        ${{ secrets.EXA_API_KEY }}
+        # --timeout 20700 = 345 min, exits before the 355-min hard kill
+        run: python bot_listener.py --timeout 20700
