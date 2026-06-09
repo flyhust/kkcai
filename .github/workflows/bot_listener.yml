@@ -1,16 +1,10 @@
 name: Telegram Bot Listener
 
-# Restart every 6 hours so the bot stays responsive around the clock.
-# Each run exits cleanly after 5h50m, then the next cron fires it back up.
-#
-# Cost note: GitHub Actions free tier = 2,000 min/month for private repos.
-# 4 runs/day × 350 min = 1,400 min/day — use a PUBLIC repo to avoid charges,
-# or run bot_listener.py on your own machine / VPS instead.
+# DISABLED - bot is running on Railway
+# schedule removed to prevent conflict with Railway deployment (409 getUpdates conflict)
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'   # restart every 6 hours
-  workflow_dispatch:          # manual start from GitHub UI
+  workflow_dispatch:  # manual trigger only
 
 jobs:
   bot:
