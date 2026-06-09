@@ -60,13 +60,12 @@ BRAND_STYLE: dict[str, str] = {
 
 HELP_TEXT = (
     "🤖 <b>Content Flywheel Bot</b>\n\n"
-    "/update     — 抓最新新闻并推送简报\n"
-    "/send       — 重发今天简报\n"
-    "/list       — 列出今天所有新闻 + 编号 + 星级\n"
+    "/update      — 抓最新新闻并推送简报\n"
+    "/send        — 重发今天简报\n"
     "/pick 1      — 生成第1条内容草稿 + AI解说\n"
     "/pick 1,3,7  — 同时生成多条\n"
     "/pick 1-5    — 生成范围内所有草稿\n"
-    "/help       — 显示此说明"
+    "/help        — 显示此说明"
 )
 
 
@@ -279,10 +278,13 @@ def handle_update_cmd(chat_id: str) -> None:
     send(chat_id, "⏳ 处理中... 正在抓取最新新闻")
     if not run_script("fetch_news.py", chat_id):
         return
-    send(chat_id, "⏳ 新闻已抓取，正在推送简报...")
+    send(chat_id, "⏳ 正在打分...")
+    if not run_script("scorer.py", chat_id):
+        return
+    send(chat_id, "⏳ 正在推送简报...")
     if not run_script("notify.py", chat_id):
         return
-    send(chat_id, "✅ 完成！新闻已抓取并推送。")
+    send(chat_id, "✅ 完成！新闻已抓取、打分并推送。")
 
 
 def handle_send_cmd(chat_id: str) -> None:
@@ -295,33 +297,6 @@ def handle_send_cmd(chat_id: str) -> None:
 def handle_help_cmd(chat_id: str) -> None:
     send(chat_id, HELP_TEXT)
 
-
-def handle_list_cmd(chat_id: str) -> None:
-    items = load_news_ordered()
-    if not items:
-        send(chat_id, "❌ 暂无新闻，请先发 /update")
-        return
-
-    lines = [
-        f"📋 <b>今日新闻列表</b> ({len(items)}条)",
-        "发 /pick 编号 选你想要的内容",
-    ]
-    current_cat = None
-
-    for num, item in enumerate(items, 1):          # ← 全局编号，直接 enumerate
-        cat = item.get("category", "")
-        if cat != current_cat:
-            current_cat = cat
-            emoji, label = CATEGORY_DISPLAY.get(cat, ("📰", cat))
-            lines.append(f"\n{emoji} <b>{label}</b>")
-
-        score = item.get("score")
-        star  = (stars(score) + " ") if score is not None else ""
-        title = item.get("title", "") or ""
-        short = esc(title[:45] + ("..." if len(title) > 45 else ""))
-        lines.append(f"{num}. {star}{short}")
-
-    send_long(chat_id, "\n".join(lines))
 
 
 def handle_pick_cmd(chat_id: str, args: str) -> None:
@@ -363,7 +338,6 @@ def handle_pick_cmd(chat_id: str, args: str) -> None:
 HANDLERS: dict = {
     "/update": handle_update_cmd,
     "/send":   handle_send_cmd,
-    "/list":   handle_list_cmd,
     "/help":   handle_help_cmd,
 }
 
