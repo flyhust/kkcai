@@ -144,6 +144,13 @@ def translate_to_chinese(text: str) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def stars(score) -> str:
+    try:
+        return "⭐" * max(1, min(5, int(score)))
+    except (TypeError, ValueError):
+        return ""
+
+
 def esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -192,9 +199,11 @@ def build_group_message(category: str, items: list[dict], translated_titles: lis
         url   = item.get("url", "")
         angle = item.get("suggested_angle", "")
         date  = item.get("published_date", "")
+        score = item.get("score")
+        star  = (stars(score) + " ") if score is not None else ""
         link  = f'<a href="{esc_url(url)}">{esc(title)}</a>' if url else esc(title)
         meta  = " · ".join(filter(None, [angle, date]))
-        lines.append(f"{i}. {link}" + (f" — {meta}" if meta else ""))
+        lines.append(f"{star}{i}. {link}" + (f" — {meta}" if meta else ""))
     lines.append(sep)
     return "\n".join(lines)
 
@@ -211,6 +220,9 @@ def run_grouped(token: str, chat_id: str, items: list[dict], dry_run: bool) -> i
     sent = 0
     for category in CATEGORY_ORDER:
         group = groups.get(category, [])
+        # sort by score desc, drop 1-star articles
+        group = sorted(group, key=lambda x: int(x.get("score", 0)), reverse=True)
+        group = [item for item in group if int(item.get("score", 0)) > 1]
         if not group:
             continue
         raw_titles = [item.get("title", "") for item in group]
