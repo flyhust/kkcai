@@ -18,12 +18,16 @@ Usage:
 
 import os
 import sys
+import re
 import json
 import time
 import argparse
 import subprocess
 import urllib.request
 import urllib.parse
+import requests
+from bs4 import BeautifulSoup
+from youtube_transcript_api import YouTubeTranscriptApi
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -51,11 +55,11 @@ CATEGORY_DISPLAY: dict[str, tuple[str, str]] = {
 }
 CATEGORY_ORDER = list(CATEGORY_DISPLAY.keys())
 
-BRAND_STYLE: dict[str, str] = {
-    "KiraAI":    "简洁专业，Fintech 感，马来西亚华人口吻，读者是有账本烦恼的 SME 老板",
-    "Coaching":  "温暖有力，启发性，SME 老板视角，让人有共鸣感",
-    "AI_Agency": "实用派，帮 SME 解决实际流程问题，不卖弄技术词汇",
-    "Interest":  "思想性强，用有趣知识角度切入商业话题，引发分享欲",
+BRAND_VOICE: dict[str, str] = {
+    "KiraAI":    "简洁专业，带 Fintech 感，用马来西亚华人口吻",
+    "Coaching":  "温暖有力，站在 SME 老板角度",
+    "AI_Agency": "实用派，避免技术词汇，帮 SME 省时省人力",
+    "Interest":  "思想性强，用知识角度切入商业话题",
 }
 
 HELP_TEXT = (
@@ -180,13 +184,62 @@ def parse_pick_args(args: str) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
+# Content fetching
+# ---------------------------------------------------------------------------
+
+def _brand(item: dict) -> str:
+    cat = item.get("category", item.get("brand", ""))
+    if cat.startswith("KiraAI"):   return "KiraAI"
+    if cat.startswith("Coaching"): return "Coaching"
+    if cat.startswith("AIAgency"): return "AI_Agency"
+    if cat.startswith("Interest"): return "Interest"
+    return item.get("brand", "KiraAI")
+
+
+def fetch_full_content(url: str, summary: str) -> tuple[str, str]:
+    if "youtube.com" in url or "youtu.be" in url:
+        try:
+            m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
+            if m:
+                vid_id     = m.group(1)
+                transcript = YouTubeTranscriptApi().fetch(
+                    vid_id, languages=["zh-Hans", "zh-TW", "zh", "en"]
+                )
+                text = " ".join(snippet.text for snippet in transcript)
+                return text, "youtube"
+        except Exception as exc:
+            print(f"  [YouTube transcript error] {exc}")
+        return summary, "summary_only"
+
+    try:
+        resp = requests.get(url, timeout=10,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        soup = BeautifulSoup(resp.text, "html.parser")
+        paras = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+        text  = "\n".join(p for p in paras if len(p) > 50)
+        if len(text) > 500:
+            return text, "webpage"
+    except Exception as exc:
+        print(f"  [Web fetch error] {exc}")
+    return summary, "summary_only"
+
+
+# ---------------------------------------------------------------------------
 # OpenRouter draft generation
 # ---------------------------------------------------------------------------
 
-def call_openrouter(prompt: str) -> str:
+INTEL_SYSTEM = (
+    "你是我的内容研究助理，专门服务马来西亚华人 SME。\n"
+    "帮我快速理解文章价值，不是帮我写发布稿。\n"
+    "说话直接，point form，像在帮老板做 briefing。\n"
+    "不要用 markdown **粗体**，用 emoji 代替强调。"
+)
+
+
+def call_openrouter(messages: list[dict]) -> str:
     payload = json.dumps({
         "model": DRAFT_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "max_tokens": 1800,
         "temperature": 0.7,
     }).encode("utf-8")
@@ -204,58 +257,73 @@ def call_openrouter(prompt: str) -> str:
         return resp["choices"][0]["message"]["content"].strip()
 
 
-def build_draft_prompt(item: dict) -> str:
-    brand   = item.get("brand", "KiraAI")
-    angle   = item.get("suggested_angle", "")
-    title   = item.get("title", "")
-    summary = (item.get("summary", "") or "")[:400]
-    style   = BRAND_STYLE.get(brand, "")
-    return (
-        f"你是马来西亚华人内容营销专家，为 {brand} 账号分析新闻并撰写内容草稿。\n\n"
-        f"品牌：{brand}\n"
-        f"品牌风格：{style}\n"
-        f"兴趣角度：{angle}\n"
-        f"新闻标题：{title}\n"
-        f"新闻摘要：{summary}\n\n"
-        "输出要求：全部用中文，专有名词（品牌名、产品名、英文缩写）保留英文。\n"
-        "保留所有 emoji 标签，用实际内容替换括号内的描述，不加多余说明。\n\n"
-        "🧠 AI 解说：\n"
-        "📌 新闻：（1句话说这条新闻讲什么）\n"
-        "🎯 品牌关联：（为什么跟这个品牌相关，1句话）\n"
-        "😤 读者痛点：（目标读者的痛点，1句话）\n"
-        "💡 内容角度：（建议用什么角度切入，1句话）\n"
-        "⭐ 内容机会：（时效性 + 值不值得做，1句话）\n\n"
-        "💡 建议标题：\n"
-        "（针对 Malaysia 华人 SME，15-25字，有好奇心驱动力）\n\n"
-        "📱 IG草稿：\n"
-        "（150字以内，口语化，最后3个hashtag）\n\n"
-        "👥 FB草稿：\n"
-        "（200字以内，附一句链接推荐语）\n\n"
-        "📝 Blog开头：\n"
-        "（300字，第一句必须抓住注意力）\n\n"
-        f"适合账号：（{brand} 的 IG/FB）"
-    )
+def build_intel_messages(item: dict, full_content: str, source_type: str) -> list[dict]:
+    brand       = _brand(item)
+    brand_voice = BRAND_VOICE.get(brand, "")
+    angle       = item.get("suggested_angle", "")
+    url         = item.get("url", "")
+
+    if source_type != "summary_only":
+        user = (
+            f"品牌：{brand}\n"
+            f"品牌风格：{brand_voice}\n"
+            f"内容角度：{angle}\n"
+            f"文章类型：{source_type}\n"
+            f"原文内容：{full_content[:3000]}\n\n"
+            "帮我做内容情报：\n\n"
+            "1️⃣ 核心信息（原文说了几个列几个，不合并不删减）\n"
+            "2️⃣ 对马来西亚 SME 最有用的洞察（1句话）\n"
+            f"3️⃣ 用「{angle}」角度可以怎么切入（2-3个方向，每个一句话）\n"
+            f"4️⃣ 3个标题选项（口语化，适合{brand}风格）\n"
+            "5️⃣ 值不值得做内容？（值得/普通/不值得，一句理由）"
+        )
+    else:
+        user = (
+            f"品牌：{brand}\n"
+            f"品牌风格：{brand_voice}\n"
+            f"内容角度：{angle}\n"
+            f"摘要：{full_content}\n\n"
+            "⚠️ 只有摘要，不要编造细节。\n\n"
+            "1️⃣ 摘要说了什么（point form）\n"
+            f"2️⃣ 用「{angle}」可以怎么切入（1-2个方向）\n"
+            "3️⃣ 2个标题选项\n"
+            f"4️⃣ 值不值得读原文？（值得/不值得，一句理由）\n"
+            f"⚠️ 建议读原文：{url}"
+        )
+
+    return [
+        {"role": "system", "content": INTEL_SYSTEM},
+        {"role": "user",   "content": user},
+    ]
 
 
 def generate_draft(item: dict) -> str:
     num   = item.get("_num", "?")
-    brand = item.get("brand", "")
+    brand = _brand(item)
     angle = item.get("suggested_angle", "")
     url   = item.get("url", "")
     title = item.get("title", "")
+    summary = (item.get("summary", "") or "")[:400]
     sep   = "━" * 18
+
+    print(f"    Fetching content for #{num}: {url[:60]}")
+    full_content, source_type = fetch_full_content(url, summary)
+    print(f"    Source type: {source_type} ({len(full_content)} chars)")
 
     header = (
         f"{sep}\n"
         f"📝 #{num} {brand} | {angle}\n"
         f'原文：<a href="{esc_url(url)}">{esc(title)}</a>\n'
+        f"来源：{source_type}\n"
     )
     try:
-        content = call_openrouter(build_draft_prompt(item))
+        messages = build_intel_messages(item, full_content, source_type)
+        content  = call_openrouter(messages)
     except Exception as exc:
         content = f"❌ 生成失败：{exc}"
 
-    return f"{header}\n{content}\n{sep}"
+    full_msg = f"{header}\n{content}\n{sep}"
+    return full_msg
 
 
 # ---------------------------------------------------------------------------
@@ -325,9 +393,23 @@ def handle_pick_cmd(chat_id: str, args: str) -> None:
     send(chat_id, f"⏳ 正在生成草稿...（共 {len(valid)} 条）")
 
     for n in valid:
-        item = {**num_map[n], "_num": n}
+        item  = {**num_map[n], "_num": n}
         draft = generate_draft(item)
-        send_long(chat_id, draft)
+        # split into ≤1500-char messages at line boundaries
+        if len(draft) > 1500:
+            lines, chunk = draft.split("\n"), ""
+            for line in lines:
+                candidate = chunk + "\n" + line if chunk else line
+                if len(candidate) > 1500:
+                    send(chat_id, chunk)
+                    time.sleep(0.4)
+                    chunk = line
+                else:
+                    chunk = candidate
+            if chunk:
+                send(chat_id, chunk)
+        else:
+            send(chat_id, draft)
         time.sleep(0.5)
 
     send(chat_id, f"✅ 草稿已生成，共 {len(valid)} 条")
