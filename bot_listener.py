@@ -127,7 +127,7 @@ def get_updates(offset: int | None, poll_timeout: int = 30) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def load_news_ordered() -> list[dict]:
-    """Return news as a stable list: category order → score desc within each group."""
+    """Return news matching notify.py exactly: category order → score desc, 1-star dropped."""
     if not os.path.exists("data/news.json"):
         return []
     with open("data/news.json", encoding="utf-8") as f:
@@ -139,12 +139,13 @@ def load_news_ordered() -> list[dict]:
 
     ordered: list[dict] = []
     for cat in CATEGORY_ORDER:
-        ordered.extend(
-            sorted(groups.get(cat, []),
-                   key=lambda x: float(x.get("score", 0)), reverse=True)
-        )
+        grp = sorted(groups.get(cat, []), key=lambda x: int(x.get("score", 0)), reverse=True)
+        grp = [item for item in grp if int(item.get("score", 0)) > 1]
+        ordered.extend(grp)
     for cat, grp in groups.items():
         if cat not in CATEGORY_ORDER:
+            grp = sorted(grp, key=lambda x: int(x.get("score", 0)), reverse=True)
+            grp = [item for item in grp if int(item.get("score", 0)) > 1]
             ordered.extend(grp)
     return ordered
 
@@ -324,7 +325,8 @@ def handle_pick_cmd(chat_id: str, args: str) -> None:
     send(chat_id, f"⏳ 正在生成草稿...（共 {len(valid)} 条）")
 
     for n in valid:
-        draft = generate_draft(num_map[n])
+        item = {**num_map[n], "_num": n}
+        draft = generate_draft(item)
         send_long(chat_id, draft)
         time.sleep(0.5)
 
