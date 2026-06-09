@@ -3,9 +3,13 @@ bot_listener.py — Content Flywheel: Telegram Command Bot
 Listens for Telegram commands via long-polling and executes pipeline scripts.
 
 Commands:
-    /update  — fetch fresh news + send briefing
-    /send    — send existing news.json briefing (no fetch)
-    /help    — list commands
+    /update     — fetch fresh news + send briefing
+    /send       — send existing news.json briefing (no fetch)
+    /list       — show today's news with global numbers + star ratings
+    /pick 1     — generate content draft for item #1
+    /pick 1,3,7 — generate drafts for items 1, 3, 7
+    /pick 1-5   — generate drafts for items 1 through 5
+    /help       — list commands
 
 Usage:
     python bot_listener.py                  # run until Ctrl+C
@@ -27,14 +31,42 @@ load_dotenv()
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")   # authorised chat only
+TOKEN          = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "")
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DRAFT_MODEL    = "anthropic/claude-haiku-4-5"
+
+CATEGORY_DISPLAY: dict[str, tuple[str, str]] = {
+    "KiraAI_Local":        ("📊", "KiraAI 本地"),
+    "KiraAI_Global":       ("📊", "KiraAI 国际"),
+    "Coaching_Local":      ("👔", "Coaching 本地"),
+    "Coaching_Global":     ("👔", "Coaching 国际"),
+    "AIAgency_Local":      ("🤖", "AI Agency 本地"),
+    "AIAgency_Global":     ("🤖", "AI Agency 国际"),
+    "Interest_Psychology": ("💡", "Interest 心理学"),
+    "Interest_Philosophy": ("💡", "Interest 哲学"),
+    "Interest_History":    ("💡", "Interest 历史经济"),
+    "Interest_Tech":       ("💡", "Interest 科技"),
+}
+CATEGORY_ORDER = list(CATEGORY_DISPLAY.keys())
+
+BRAND_STYLE: dict[str, str] = {
+    "KiraAI":    "简洁专业，Fintech 感，马来西亚华人口吻，读者是有账本烦恼的 SME 老板",
+    "Coaching":  "温暖有力，启发性，SME 老板视角，让人有共鸣感",
+    "AI_Agency": "实用派，帮 SME 解决实际流程问题，不卖弄技术词汇",
+    "Interest":  "思想性强，用有趣知识角度切入，引发分享欲",
+}
 
 HELP_TEXT = (
     "🤖 <b>Content Flywheel Bot</b>\n\n"
-    "/update — 抓取最新新闻并推送简报\n"
-    "/send   — 推送现有简报（不重新抓取）\n"
-    "/help   — 显示此说明"
+    "/update     — 抓最新新闻并推送简报\n"
+    "/send       — 重发今天简报\n"
+    "/list       — 列出今天所有新闻 + 编号 + 星级\n"
+    "/pick 1     — 生成第1条内容草稿\n"
+    "/pick 1,3,7 — 同时生成多条草稿\n"
+    "/pick 1-5   — 生成第1到5条草稿\n"
+    "/help       — 显示此说明"
 )
 
 
@@ -59,6 +91,25 @@ def send(chat_id: str | int, text: str) -> None:
         parse_mode="HTML", disable_web_page_preview="true")
 
 
+def send_long(chat_id: str | int, text: str) -> None:
+    """Split at newlines and send in ≤4000-char chunks."""
+    MAX = 4000
+    if len(text) <= MAX:
+        send(chat_id, text)
+        return
+    chunk = ""
+    for line in text.split("\n"):
+        candidate = chunk + "\n" + line if chunk else line
+        if len(candidate) > MAX:
+            send(chat_id, chunk)
+            time.sleep(0.4)
+            chunk = line
+        else:
+            chunk = candidate
+    if chunk:
+        send(chat_id, chunk)
+
+
 def get_updates(offset: int | None, poll_timeout: int = 30) -> list[dict]:
     params: dict = {"timeout": poll_timeout, "allowed_updates": "message"}
     if offset is not None:
@@ -66,11 +117,140 @@ def get_updates(offset: int | None, poll_timeout: int = 30) -> list[dict]:
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?" + urllib.parse.urlencode(params)
     try:
         with urllib.request.urlopen(url, timeout=poll_timeout + 10) as r:
-            result = json.loads(r.read())
-            return result.get("result", [])
+            return json.loads(r.read()).get("result", [])
     except Exception as exc:
         print(f"  [getUpdates error] {exc}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Data helpers
+# ---------------------------------------------------------------------------
+
+def load_news_indexed() -> list[dict]:
+    """Return news ordered by category → score desc. Each item gets a _num field."""
+    if not os.path.exists("data/news.json"):
+        return []
+    with open("data/news.json", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    groups: dict[str, list[dict]] = {}
+    for item in raw:
+        groups.setdefault(item.get("category", ""), []).append(item)
+
+    ordered: list[dict] = []
+    for cat in CATEGORY_ORDER:
+        group = sorted(groups.get(cat, []),
+                       key=lambda x: float(x.get("score", 0)), reverse=True)
+        ordered.extend(group)
+    for cat, grp in groups.items():
+        if cat not in CATEGORY_ORDER:
+            ordered.extend(grp)
+
+    for i, item in enumerate(ordered):
+        item["_num"] = i + 1
+    return ordered
+
+
+def stars(score) -> str:
+    try:
+        s = max(1, min(5, int(round(float(score)))))
+        return "⭐ 可跳过" if s == 1 else "⭐" * s
+    except (TypeError, ValueError):
+        return ""
+
+
+def esc(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def esc_url(url: str) -> str:
+    return url.replace("&", "&amp;")
+
+
+def parse_pick_args(args: str) -> list[int]:
+    """Parse '1', '1,3,7', or '1-5' into a list of ints."""
+    args = args.strip()
+    try:
+        if "," in args:
+            return [int(x.strip()) for x in args.split(",") if x.strip()]
+        if "-" in args:
+            a, b = args.split("-", 1)
+            return list(range(int(a.strip()), int(b.strip()) + 1))
+        return [int(args)]
+    except ValueError:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter draft generation
+# ---------------------------------------------------------------------------
+
+def call_openrouter(prompt: str) -> str:
+    payload = json.dumps({
+        "model": DRAFT_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1200,
+        "temperature": 0.7,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        OPENROUTER_URL, data=payload,
+        headers={
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "HTTP-Referer":  "https://github.com/flyhust/kkcai",
+            "X-Title":       "Content Flywheel",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        resp = json.loads(r.read())
+        return resp["choices"][0]["message"]["content"].strip()
+
+
+def build_draft_prompt(item: dict) -> str:
+    brand   = item.get("brand", "KiraAI")
+    angle   = item.get("suggested_angle", "")
+    title   = item.get("title", "")
+    summary = (item.get("summary", "") or "")[:400]
+    style   = BRAND_STYLE.get(brand, "")
+    return (
+        f"你是马来西亚华人内容营销专家，为 {brand} 账号撰写内容草稿。\n\n"
+        f"品牌风格：{style}\n"
+        f"兴趣角度：{angle}\n"
+        f"新闻标题：{title}\n"
+        f"新闻摘要：{summary}\n\n"
+        "请按以下各节标签输出内容（保留 emoji 标签，用实际内容替换括号内的描述）：\n\n"
+        "💡 建议标题：\n"
+        "（针对 Malaysia 华人 SME，15-25字，有好奇心驱动力）\n\n"
+        "📱 IG草稿：\n"
+        "（150字以内，口语化，最后3个hashtag）\n\n"
+        "👥 FB草稿：\n"
+        "（200字以内，附一句链接推荐语）\n\n"
+        "📝 Blog开头：\n"
+        f"（300字，第一句必须抓住注意力）\n\n"
+        f"适合账号：{brand}"
+    )
+
+
+def generate_draft(item: dict) -> str:
+    num   = item.get("_num", "?")
+    brand = item.get("brand", "")
+    angle = item.get("suggested_angle", "")
+    url   = item.get("url", "")
+    title = item.get("title", "")
+    sep   = "━" * 18
+
+    header = (
+        f"{sep}\n"
+        f"📝 #{num} {brand} | {angle}\n"
+        f'原文：<a href="{esc_url(url)}">{esc(title)}</a>\n'
+    )
+    try:
+        content = call_openrouter(build_draft_prompt(item))
+    except Exception as exc:
+        content = f"❌ 生成失败：{exc}"
+
+    return f"{header}\n{content}\n{sep}"
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +258,10 @@ def get_updates(offset: int | None, poll_timeout: int = 30) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def run_script(script: str, chat_id: str) -> bool:
-    """Run a Python script as subprocess; return True on success."""
     result = subprocess.run(
         [sys.executable, script],
         capture_output=True, text=True, timeout=180,
-        env={**os.environ},   # inherit all env vars (keys flow through)
+        env={**os.environ},
     )
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "unknown error")[:300]
@@ -112,10 +291,80 @@ def handle_help_cmd(chat_id: str) -> None:
     send(chat_id, HELP_TEXT)
 
 
-HANDLERS = {
+def handle_list_cmd(chat_id: str) -> None:
+    items = load_news_indexed()
+    if not items:
+        send(chat_id, "❌ 暂无新闻，请先发 /update")
+        return
+
+    lines = [
+        f"📋 <b>今日新闻列表</b> ({len(items)}条)",
+        "发 /pick 编号 选你想要的内容",
+    ]
+    current_cat = None
+
+    for item in items:
+        cat = item.get("category", "")
+        if cat != current_cat:
+            current_cat = cat
+            emoji, label = CATEGORY_DISPLAY.get(cat, ("📰", cat))
+            lines.append(f"\n{emoji} <b>{label}</b>")
+
+        num   = item["_num"]
+        score = item.get("score")
+        star  = (stars(score) + " ") if score is not None else ""
+        title = item.get("title", "") or ""
+        short = esc(title[:45] + ("..." if len(title) > 45 else ""))
+        lines.append(f"{num}. {star}{short}")
+
+    send_long(chat_id, "\n".join(lines))
+
+
+def handle_pick_cmd(chat_id: str, args: str) -> None:
+    if not args:
+        send(chat_id, "❓ 用法：/pick 1 或 /pick 1,3,7 或 /pick 1-5")
+        return
+
+    nums = parse_pick_args(args)
+    if not nums:
+        send(chat_id, f"❓ 无法解析编号：<code>{esc(args)}</code>")
+        return
+
+    items   = load_news_indexed()
+    num_map = {item["_num"]: item for item in items}
+
+    valid   = [n for n in nums if n in num_map]
+    invalid = [n for n in nums if n not in num_map]
+
+    if not valid:
+        send(chat_id, f"❌ 编号不存在：{nums}（共 {len(items)} 条新闻）")
+        return
+    if invalid:
+        send(chat_id, f"⚠️ 以下编号不存在，已跳过：{invalid}")
+
+    send(chat_id, f"⏳ 正在生成草稿...（共 {len(valid)} 条）")
+
+    for n in valid:
+        draft = generate_draft(num_map[n])
+        send_long(chat_id, draft)
+        time.sleep(0.5)
+
+    send(chat_id, f"✅ 草稿已生成，共 {len(valid)} 条")
+
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+
+HANDLERS: dict = {
     "/update": handle_update_cmd,
     "/send":   handle_send_cmd,
+    "/list":   handle_list_cmd,
     "/help":   handle_help_cmd,
+}
+
+ARG_HANDLERS: dict = {
+    "/pick": handle_pick_cmd,
 }
 
 
@@ -132,38 +381,38 @@ def main() -> None:
     if not TOKEN:
         raise EnvironmentError("TELEGRAM_BOT_TOKEN not set in .env")
 
-    start   = time.time()
-    offset  = None
+    start  = time.time()
+    offset = None
     print(f"Bot listener started. Authorised chat: {CHAT_ID or '(any)'}")
-    print("Commands: /update  /send  /help   — Ctrl+C to stop\n")
+    print("Commands: /update  /send  /list  /pick  /help   — Ctrl+C to stop\n")
 
     while True:
-        # Honour max-runtime (used by GitHub Actions to exit cleanly)
         if args.timeout and (time.time() - start) > args.timeout:
             print("Max runtime reached — exiting.")
             break
 
         updates = get_updates(offset)
         for upd in updates:
-            offset = upd["update_id"] + 1
+            offset  = upd["update_id"] + 1
             msg     = upd.get("message", {})
             text    = msg.get("text", "").strip()
             chat_id = str(msg.get("chat", {}).get("id", ""))
 
             if not text.startswith("/"):
                 continue
-
-            # Security: only respond to the authorised chat
             if CHAT_ID and chat_id != CHAT_ID:
                 print(f"  Ignored message from unauthorised chat {chat_id}")
                 continue
 
-            command = text.split()[0].lower()
-            print(f"[{time.strftime('%H:%M:%S')}] Command: {command} from {chat_id}")
+            parts   = text.split(None, 1)
+            command = parts[0].lower()
+            cmdargs = parts[1] if len(parts) > 1 else ""
+            print(f"[{time.strftime('%H:%M:%S')}] {command!r} {cmdargs!r} from {chat_id}")
 
-            handler = HANDLERS.get(command)
-            if handler:
-                handler(chat_id)
+            if command in ARG_HANDLERS:
+                ARG_HANDLERS[command](chat_id, cmdargs)
+            elif command in HANDLERS:
+                HANDLERS[command](chat_id)
             else:
                 send(chat_id, f"❓ 未知指令：{command}\n输入 /help 查看可用指令。")
 
