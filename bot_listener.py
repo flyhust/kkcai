@@ -55,7 +55,7 @@ BRAND_STYLE: dict[str, str] = {
     "KiraAI":    "简洁专业，Fintech 感，马来西亚华人口吻，读者是有账本烦恼的 SME 老板",
     "Coaching":  "温暖有力，启发性，SME 老板视角，让人有共鸣感",
     "AI_Agency": "实用派，帮 SME 解决实际流程问题，不卖弄技术词汇",
-    "Interest":  "思想性强，用有趣知识角度切入，引发分享欲",
+    "Interest":  "思想性强，用有趣知识角度切入商业话题，引发分享欲",
 }
 
 HELP_TEXT = (
@@ -63,9 +63,9 @@ HELP_TEXT = (
     "/update     — 抓最新新闻并推送简报\n"
     "/send       — 重发今天简报\n"
     "/list       — 列出今天所有新闻 + 编号 + 星级\n"
-    "/pick 1     — 生成第1条内容草稿\n"
-    "/pick 1,3,7 — 同时生成多条草稿\n"
-    "/pick 1-5   — 生成第1到5条草稿\n"
+    "/pick 1      — 生成第1条内容草稿 + AI解说\n"
+    "/pick 1,3,7  — 同时生成多条\n"
+    "/pick 1-5    — 生成范围内所有草稿\n"
     "/help       — 显示此说明"
 )
 
@@ -190,7 +190,7 @@ def call_openrouter(prompt: str) -> str:
     payload = json.dumps({
         "model": DRAFT_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1200,
+        "max_tokens": 1800,
         "temperature": 0.7,
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -214,12 +214,20 @@ def build_draft_prompt(item: dict) -> str:
     summary = (item.get("summary", "") or "")[:400]
     style   = BRAND_STYLE.get(brand, "")
     return (
-        f"你是马来西亚华人内容营销专家，为 {brand} 账号撰写内容草稿。\n\n"
+        f"你是马来西亚华人内容营销专家，为 {brand} 账号分析新闻并撰写内容草稿。\n\n"
+        f"品牌：{brand}\n"
         f"品牌风格：{style}\n"
         f"兴趣角度：{angle}\n"
         f"新闻标题：{title}\n"
         f"新闻摘要：{summary}\n\n"
-        "请按以下各节标签输出内容（保留 emoji 标签，用实际内容替换括号内的描述）：\n\n"
+        "输出要求：全部用中文，专有名词（品牌名、产品名、英文缩写）保留英文。\n"
+        "保留所有 emoji 标签，用实际内容替换括号内的描述，不加多余说明。\n\n"
+        "🧠 AI 解说：\n"
+        "📌 新闻：（1句话说这条新闻讲什么）\n"
+        "🎯 品牌关联：（为什么跟这个品牌相关，1句话）\n"
+        "😤 读者痛点：（目标读者的痛点，1句话）\n"
+        "💡 内容角度：（建议用什么角度切入，1句话）\n"
+        "⭐ 内容机会：（时效性 + 值不值得做，1句话）\n\n"
         "💡 建议标题：\n"
         "（针对 Malaysia 华人 SME，15-25字，有好奇心驱动力）\n\n"
         "📱 IG草稿：\n"
@@ -227,8 +235,8 @@ def build_draft_prompt(item: dict) -> str:
         "👥 FB草稿：\n"
         "（200字以内，附一句链接推荐语）\n\n"
         "📝 Blog开头：\n"
-        f"（300字，第一句必须抓住注意力）\n\n"
-        f"适合账号：{brand}"
+        "（300字，第一句必须抓住注意力）\n\n"
+        f"适合账号：（{brand} 的 IG/FB）"
     )
 
 
