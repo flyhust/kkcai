@@ -127,8 +127,8 @@ def get_updates(offset: int | None, poll_timeout: int = 30) -> list[dict]:
 # Data helpers
 # ---------------------------------------------------------------------------
 
-def load_news_indexed() -> list[dict]:
-    """Return news ordered by category → score desc. Each item gets a _num field."""
+def load_news_ordered() -> list[dict]:
+    """Return news as a stable list: category order → score desc within each group."""
     if not os.path.exists("data/news.json"):
         return []
     with open("data/news.json", encoding="utf-8") as f:
@@ -140,15 +140,13 @@ def load_news_indexed() -> list[dict]:
 
     ordered: list[dict] = []
     for cat in CATEGORY_ORDER:
-        group = sorted(groups.get(cat, []),
-                       key=lambda x: float(x.get("score", 0)), reverse=True)
-        ordered.extend(group)
+        ordered.extend(
+            sorted(groups.get(cat, []),
+                   key=lambda x: float(x.get("score", 0)), reverse=True)
+        )
     for cat, grp in groups.items():
         if cat not in CATEGORY_ORDER:
             ordered.extend(grp)
-
-    for i, item in enumerate(ordered):
-        item["_num"] = i + 1
     return ordered
 
 
@@ -299,7 +297,7 @@ def handle_help_cmd(chat_id: str) -> None:
 
 
 def handle_list_cmd(chat_id: str) -> None:
-    items = load_news_indexed()
+    items = load_news_ordered()
     if not items:
         send(chat_id, "❌ 暂无新闻，请先发 /update")
         return
@@ -310,14 +308,13 @@ def handle_list_cmd(chat_id: str) -> None:
     ]
     current_cat = None
 
-    for item in items:
+    for num, item in enumerate(items, 1):          # ← 全局编号，直接 enumerate
         cat = item.get("category", "")
         if cat != current_cat:
             current_cat = cat
             emoji, label = CATEGORY_DISPLAY.get(cat, ("📰", cat))
             lines.append(f"\n{emoji} <b>{label}</b>")
 
-        num   = item["_num"]
         score = item.get("score")
         star  = (stars(score) + " ") if score is not None else ""
         title = item.get("title", "") or ""
@@ -337,8 +334,8 @@ def handle_pick_cmd(chat_id: str, args: str) -> None:
         send(chat_id, f"❓ 无法解析编号：<code>{esc(args)}</code>")
         return
 
-    items   = load_news_indexed()
-    num_map = {item["_num"]: item for item in items}
+    items   = load_news_ordered()
+    num_map = {i: item for i, item in enumerate(items, 1)}  # ← 与 /list 相同顺序
 
     valid   = [n for n in nums if n in num_map]
     invalid = [n for n in nums if n not in num_map]
