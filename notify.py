@@ -191,11 +191,11 @@ def build_header(items: list[dict], date_str: str) -> str:
     )
 
 
-def build_group_message(category: str, items: list[dict], translated_titles: list[str]) -> str:
+def build_group_message(category: str, items: list[dict], translated_titles: list[str], start: int = 1) -> str:
     emoji, label = CATEGORY_DISPLAY.get(category, ("📰", category))
     sep   = "━" * 18
     lines = [sep, f"{emoji} <b>{label}</b> ({len(items)}条)", ""]
-    for i, (item, title) in enumerate(zip(items, translated_titles), 1):
+    for i, (item, title) in enumerate(zip(items, translated_titles), start):
         url   = item.get("url", "")
         angle = item.get("suggested_angle", "")
         date  = item.get("published_date", "")
@@ -217,7 +217,8 @@ def run_grouped(token: str, chat_id: str, items: list[dict], dry_run: bool) -> i
     send_message(token, chat_id, build_header(items, date_str), dry_run)
     time.sleep(1)
 
-    sent = 0
+    sent    = 0
+    counter = 1
     for category in CATEGORY_ORDER:
         group = groups.get(category, [])
         # sort by score desc, drop 1-star articles
@@ -228,9 +229,10 @@ def run_grouped(token: str, chat_id: str, items: list[dict], dry_run: bool) -> i
         raw_titles = [item.get("title", "") for item in group]
         print(f"  Translating [{category}] ({len(group)} titles) ...")
         translated = translate_batch(raw_titles)
-        msg = build_group_message(category, group, translated)
+        msg = build_group_message(category, group, translated, start=counter)
         ok  = send_message(token, chat_id, msg, dry_run)
         print(f"  {'OK' if ok else 'FAIL'} [{category}] {len(group)} articles")
+        counter += len(group)
         sent += 1
         time.sleep(1)
 
