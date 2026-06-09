@@ -23,8 +23,14 @@ jobs:
 
       - name: Fetch latest news
         env:
-          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+          EXA_API_KEY:        ${{ secrets.EXA_API_KEY }}
+          ANYSEARCH_API_KEY:  ${{ secrets.ANYSEARCH_API_KEY }}
         run: python fetch_news.py
+
+      - name: Score articles
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python scorer.py
 
       - name: Send Telegram briefing
         env:

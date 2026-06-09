@@ -154,8 +154,7 @@ def load_news_indexed() -> list[dict]:
 
 def stars(score) -> str:
     try:
-        s = max(1, min(5, int(round(float(score)))))
-        return "⭐ 可跳过" if s == 1 else "⭐" * s
+        return "⭐" * max(1, min(5, int(score)))
     except (TypeError, ValueError):
         return ""
 
